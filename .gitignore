@@ -216,3 +216,17 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- Node.js / NestJS ---
+node_modules/
+dist/
+*.tsbuildinfo
+coverage/
+
+# Datos de la app (dedup storage + sqlite) — solo el directorio de datos en la raíz
+/storage/
+storage/*.db
+storage/*.db-*
+
+# Logs
+*.log
