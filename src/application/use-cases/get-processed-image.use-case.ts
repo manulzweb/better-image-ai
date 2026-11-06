@@ -16,13 +16,13 @@ export class GetProcessedImageUseCase {
     @Inject(STORAGE) private readonly storage: StoragePort,
   ) {}
 
-  async execute(hash: string): Promise<ProcessedImagePayload> {
+  async execute(hash: string, tenantId = 'legacy'): Promise<ProcessedImagePayload> {
     if (!SHA256_HEX_REGEX.test(hash)) {
       throw new ImageNotFoundException(hash);
     }
 
     const record = await this.repository.findByHash(hash);
-    if (!record) {
+    if (!record || (record.tenantId ?? 'legacy') !== tenantId) {
       throw new ImageNotFoundException(hash);
     }
 

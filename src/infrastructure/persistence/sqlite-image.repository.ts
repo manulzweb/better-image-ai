@@ -1,13 +1,14 @@
 import { mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { Injectable, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, OnApplicationShutdown } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ImageRepositoryPort } from '../../application/ports/image-repository.port';
 import { ProcessedImage } from '../../domain/entities/processed-image';
 import { EnvConfig } from '../../config/config.schema';
 
 interface ImageRow {
+  tenant_id: string;
   hash: string;
   mime_type: string;
   size_bytes: number;
@@ -16,7 +17,7 @@ interface ImageRow {
 }
 
 @Injectable()
-export class SqliteImageRepository implements ImageRepositoryPort, OnModuleDestroy {
+export class SqliteImageRepository implements ImageRepositoryPort, OnApplicationShutdown {
   private readonly db: DatabaseSync;
 
   constructor(private readonly config: ConfigService<EnvConfig, true>) {
@@ -35,12 +36,18 @@ export class SqliteImageRepository implements ImageRepositoryPort, OnModuleDestr
         created_at TEXT NOT NULL
       )
     `);
+    const columns = this.db.prepare('PRAGMA table_info(processed_images)').all();
+    if (!columns.some((column) => column.name === 'tenant_id')) {
+      this.db.exec(
+        "ALTER TABLE processed_images ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'legacy'",
+      );
+    }
   }
 
   async findByHash(hash: string): Promise<ProcessedImage | null> {
     const row = this.db
       .prepare(
-        'SELECT hash, mime_type, size_bytes, strategy, created_at FROM processed_images WHERE hash = ?',
+        'SELECT tenant_id, hash, mime_type, size_bytes, strategy, created_at FROM processed_images WHERE hash = ?',
       )
       .get(hash) as ImageRow | undefined;
 
@@ -49,6 +56,7 @@ export class SqliteImageRepository implements ImageRepositoryPort, OnModuleDestr
     }
 
     return {
+      tenantId: row.tenant_id,
       hash: row.hash,
       mimeType: row.mime_type,
       sizeBytes: row.size_bytes,
@@ -60,8 +68,8 @@ export class SqliteImageRepository implements ImageRepositoryPort, OnModuleDestr
   async save(image: ProcessedImage): Promise<void> {
     this.db
       .prepare(
-        `INSERT OR IGNORE INTO processed_images (hash, mime_type, size_bytes, strategy, created_at)
-         VALUES (?, ?, ?, ?, ?)`,
+        `INSERT OR IGNORE INTO processed_images (hash, mime_type, size_bytes, strategy, created_at, tenant_id)
+         VALUES (?, ?, ?, ?, ?, ?)`,
       )
       .run(
         image.hash,
@@ -69,6 +77,7 @@ export class SqliteImageRepository implements ImageRepositoryPort, OnModuleDestr
         image.sizeBytes,
         image.strategy,
         image.createdAt.toISOString(),
+        image.tenantId ?? 'legacy',
       );
   }
 
@@ -84,7 +93,7 @@ export class SqliteImageRepository implements ImageRepositoryPort, OnModuleDestr
     this.db.prepare('SELECT 1').get();
   }
 
-  onModuleDestroy(): void {
+  onApplicationShutdown(): void {
     this.db.close();
   }
 }

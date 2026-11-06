@@ -4,7 +4,7 @@ Contexto para agentes que trabajen en este repo.
 
 ## Qué es
 
-API (NestJS + TypeScript) que centra productos en imágenes con fondo consistente usando **Gemini 2.5 Flash Image** (`gemini-2.5-flash-image`, Nano Banana). Deduplica por **sha256**: si la imagen ya fue procesada, devuelve el resultado cacheado sin llamar a Gemini.
+API (NestJS + TypeScript) que centra productos en imágenes con fondo consistente usando **Gemini 3.1 Flash Lite Image** (`gemini-3.1-flash-lite-image`, Nano Banana). Deduplica por **sha256**: si la imagen ya fue procesada, devuelve el resultado cacheado sin llamar a Gemini.
 
 ## Stack y decisiones clave
 
@@ -83,3 +83,14 @@ npm run start:dev   # watch
 - `GET /v1/images/:hash` también requiere API key; hacerlo público = quitar el guard de esa ruta.
 - Sin estrategia de migraciones de esquema: solo `CREATE TABLE IF NOT EXISTS`.
 - Directorio de storage plano (sin sharding) — valorar `ab/cd/hash` si crece mucho.
+
+
+## Jobs y créditos (implementación actual)
+
+- Hay cola persistente SQLite para una sola instancia: crear `/v1/jobs` (hasta 100), subir partes en `/:id/items`, cerrar con `/:id/submit`, consultar/cancelar. No usar PM2 cluster ni réplicas sobre la misma DB.
+- Todos los clientes empiezan sin saldo. `CREDITS` es un port obligatorio de OptimizeImageUseCase: reserva antes de Gemini y confirma metadata + captura en una transacción. Caché/errores liberan reservas; no añadir rutas que eviten el control de créditos.
+- `SqliteCommerceRepository` implementa `JOBS` y `CREDITS`; `JobWorker` recupera trabajos y drena antes de cerrar conexiones. Los repos SQLite cierran en `onApplicationShutdown`.
+- `PURCHASES` y `PAYMENT_GATEWAY` separan compras de Mercado Pago. Webhooks: firma + consulta autoritativa + validación de vendedor/modo/importe/moneda/referencia + acreditación idempotente. No confiar en el body ni en retornos del navegador.
+- Recargas manuales requieren `X-Admin-Key` contra `ADMIN_API_KEY_HASH`, distinto de las API keys de clientes. Reembolsos/contracargos suspenden nuevas generaciones y requieren conciliación administrativa.
+- Mercado Pago permanece desactivado sin configuración. No ejecutar cobros reales ni insertar créditos de producción durante pruebas.
+- Contrato y operación: `docs/jobs-and-credits.md`. E2E de jobs/pagos usa proveedores simulados y directorios temporales.

@@ -1,3 +1,4 @@
+import { WorkflowException } from '../../domain/exceptions/workflow.exception';
 import {
   ArgumentsHost,
   Catch,
@@ -55,6 +56,15 @@ export class DomainExceptionFilter implements ExceptionFilter {
   }
 
   private mapException(exception: unknown): MappedError {
+    if (exception instanceof WorkflowException) {
+      const statuses = {
+        INSUFFICIENT_CREDITS: 402,
+        WORKFLOW_NOT_FOUND: 404,
+        WORKFLOW_CONFLICT: 409,
+        QUEUE_FULL: 503,
+      };
+      return { status: statuses[exception.code], code: exception.code, message: exception.message };
+    }
     if (exception instanceof ImageNotFoundException) {
       return { status: HttpStatus.NOT_FOUND, code: exception.code, message: exception.message };
     }
@@ -73,13 +83,17 @@ export class DomainExceptionFilter implements ExceptionFilter {
       };
     }
     if (exception instanceof GeminiApiException) {
-      return { status: HttpStatus.BAD_GATEWAY, code: exception.code, message: exception.message };
+      return {
+        status: HttpStatus.BAD_GATEWAY,
+        code: exception.code,
+        message: 'Image provider failed to process the request',
+      };
     }
     if (exception instanceof ImageProcessingException) {
       return {
         status: HttpStatus.INTERNAL_SERVER_ERROR,
         code: exception.code,
-        message: exception.message,
+        message: 'Image processing failed',
       };
     }
     // Multer: LIMIT_FILE_SIZE → 413; cualquier otro (campo, etc.) → 400, no 500.

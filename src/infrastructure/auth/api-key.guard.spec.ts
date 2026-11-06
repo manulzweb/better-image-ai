@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { ApiKeyGuard } from './api-key.guard';
 
 const fakeConfig = {
-  get: () => ['valid-key-1', 'valid-key-2'],
+  get: (key: string) => (key === 'API_KEYS' ? ['valid-key-1', 'valid-key-2'] : []),
 } as unknown as ConfigService;
 
 const contextOf = (header?: string | string[]): ExecutionContext =>
@@ -36,7 +36,9 @@ describe('ApiKeyGuard', () => {
     expect(() => guard.canActivate(contextOf('wrong-key'))).toThrow(UnauthorizedException);
   });
 
-  it('soporta cabecera como array (primer valor)', () => {
-    expect(guard.canActivate(contextOf(['valid-key-1', 'valid-key-2']))).toBe(true);
+  it('rechaza cabeceras ambiguas', () => {
+    expect(() => guard.canActivate(contextOf(['valid-key-1', 'valid-key-2']))).toThrow(
+      UnauthorizedException,
+    );
   });
 });

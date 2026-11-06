@@ -1,3 +1,5 @@
+import { Semaphore } from '../../application/services/semaphore';
+import { createHash } from 'node:crypto';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { GoogleGenAI, GenerateContentResponse } from '@google/genai';
@@ -18,6 +20,8 @@ const CENTER_PRODUCT_PROMPT = [
 @Injectable()
 export class GeminiImageOptimizerAdapter implements ImageOptimizerPort {
   readonly strategy = 'gemini';
+  readonly cacheVersion: string;
+  private readonly semaphore: Semaphore;
   private readonly logger = new Logger(GeminiImageOptimizerAdapter.name);
   private readonly client: GoogleGenAI;
   private readonly model: string;
@@ -28,12 +32,20 @@ export class GeminiImageOptimizerAdapter implements ImageOptimizerPort {
     this.client = new GoogleGenAI({
       apiKey: config.get('GEMINI_API_KEY', { infer: true }),
     });
+    this.semaphore = new Semaphore(config.get('GEMINI_CONCURRENCY', { infer: true }) ?? 2);
     this.model = config.get('GEMINI_MODEL', { infer: true });
     this.timeoutMs = config.get('GEMINI_TIMEOUT_MS', { infer: true });
+    this.cacheVersion = createHash('sha256')
+      .update(this.model + CENTER_PRODUCT_PROMPT)
+      .digest('hex');
     this.maxRetries = config.get('GEMINI_MAX_RETRIES', { infer: true });
   }
 
   async optimize(input: OptimizeInput): Promise<Buffer> {
+    return this.semaphore.run(() => this.optimizeWithRetries(input));
+  }
+
+  private async optimizeWithRetries(input: OptimizeInput): Promise<Buffer> {
     // +1 porque maxRetries son reintentos adicionales al intento inicial.
     const totalAttempts = this.maxRetries + 1;
     for (let attempt = 1; ; attempt++) {
@@ -72,7 +84,15 @@ export class GeminiImageOptimizerAdapter implements ImageOptimizerPort {
         model: this.model,
         contents: [
           { inlineData: { mimeType: input.mimeType, data: input.buffer.toString('base64') } },
-          { text: CENTER_PRODUCT_PROMPT },
+          {
+            text: input.prompt
+              ? [
+                  'Edit this ecommerce product photograph. Preserve product identity, shape, colors, labels and logos.',
+                  'Apply these presentation instructions:',
+                  input.prompt,
+                ].join(' ')
+              : CENTER_PRODUCT_PROMPT,
+          },
         ],
         config: { responseModalities: ['IMAGE'], abortSignal: controller.signal },
       });
@@ -82,8 +102,13 @@ export class GeminiImageOptimizerAdapter implements ImageOptimizerPort {
       }
       // 4xx distintos de 429: culpa de la entrada, no reintentable.
       const status = this.statusOf(error);
-      if (status !== null && status < 500 && status !== 429) {
-        throw new GeminiBadRequestException(this.messageOf(error));
+      if (status !== null && status >= 400 && status < 500 && status !== 429) {
+        if (status === 400 || status === 422) {
+          throw new GeminiBadRequestException(
+            'Provider rejected the image or editing instructions',
+          );
+        }
+        throw new GeminiApiException('Image provider configuration or availability error');
       }
       throw error;
     } finally {
@@ -120,7 +145,7 @@ export class GeminiImageOptimizerAdapter implements ImageOptimizerPort {
   }
 
   private backoffMs(attempt: number): number {
-    return Math.min(500 * 2 ** (attempt - 1), 5_000);
+    return Math.floor(Math.min(500 * 2 ** (attempt - 1), 5_000) * (0.5 + Math.random() * 0.5));
   }
 
   private sleep(ms: number): Promise<void> {

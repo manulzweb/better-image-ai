@@ -1,4 +1,12 @@
-import { Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { PersistenceLock } from '../../application/services/persistence-lock';
+import {
+  Inject,
+  Injectable,
+  Logger,
+  Optional,
+  OnModuleDestroy,
+  OnModuleInit,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   IMAGE_REPOSITORY,
@@ -19,6 +27,7 @@ export class StorageGarbageCollector implements OnModuleInit, OnModuleDestroy {
     @Inject(STORAGE) private readonly storage: StoragePort,
     @Inject(IMAGE_REPOSITORY) private readonly repository: ImageRepositoryPort,
     config: ConfigService<EnvConfig, true>,
+    @Optional() private readonly persistenceLock: PersistenceLock = new PersistenceLock(),
   ) {
     this.intervalMinutes = config.get('GC_INTERVAL_MINUTES', { infer: true });
   }
@@ -41,12 +50,14 @@ export class StorageGarbageCollector implements OnModuleInit, OnModuleDestroy {
   // en background, un fallo de GC no debe tumbar el arranque.
   async run(): Promise<number> {
     try {
-      const validHashes = new Set(await this.repository.listHashes());
-      const removed = await this.storage.removeOrphans(validHashes);
-      if (removed.length > 0) {
-        this.logger.log(`Storage GC removed ${removed.length} orphan file(s)`);
-      }
-      return removed.length;
+      return await this.persistenceLock.run(async () => {
+        const validHashes = new Set(await this.repository.listHashes());
+        const removed = await this.storage.removeOrphans(validHashes);
+        if (removed.length > 0) {
+          this.logger.log(`Storage GC removed ${removed.length} orphan file(s)`);
+        }
+        return removed.length;
+      });
     } catch (error) {
       this.logger.error('Storage GC failed', error instanceof Error ? error.stack : String(error));
       return 0;

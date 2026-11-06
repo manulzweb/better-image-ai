@@ -1,4 +1,5 @@
 export interface ProcessedImage {
+  readonly tenantId?: string;
   readonly hash: string;
   readonly mimeType: string;
   readonly sizeBytes: number;

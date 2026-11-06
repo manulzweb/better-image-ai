@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import helmet from 'helmet';
@@ -44,6 +45,21 @@ describe('Image API (e2e)', () => {
     workDir = mkdtempSync(join(tmpdir(), 'bia-e2e-'));
     process.env.GEMINI_API_KEY = 'e2e-gemini-key';
     process.env.API_KEYS = API_KEY;
+    process.env.CLIENTS_JSON = JSON.stringify([
+      {
+        id: 'shop-a',
+        keyHashes: [
+          createHash('sha256').update('shop-a-key').digest('hex'),
+          createHash('sha256').update('shop-a-rotated').digest('hex'),
+        ],
+        profiles: { white: 'White background', dark: 'Dark background' },
+      },
+      {
+        id: 'shop-b',
+        keyHashes: [createHash('sha256').update('shop-b-key').digest('hex')],
+        profiles: { white: 'White background' },
+      },
+    ]);
     process.env.STORAGE_DIR = join(workDir, 'processed');
     process.env.DB_PATH = join(workDir, 'better-image.db');
     process.env.RATE_LIMIT_PER_MINUTE = '1000';
@@ -54,11 +70,68 @@ describe('Image API (e2e)', () => {
     app = moduleRef.createNestApplication();
     app.use(helmet());
     await app.init();
+    const { SqliteCommerceRepository } =
+      await import('../../src/infrastructure/persistence/sqlite-commerce.repository');
+    const credits = app.get(SqliteCommerceRepository);
+    for (const tenant of ['legacy', 'shop-a', 'shop-b'])
+      await credits.grant(tenant, 100, `test:${tenant}`);
   });
 
   afterAll(async () => {
     await app.close();
     rmSync(workDir, { recursive: true, force: true });
+  });
+
+  const upload = (key: string, profile = 'white') =>
+    request(app.getHttpServer())
+      .post('/v1/images/optimize')
+      .set('X-API-Key', key)
+      .field('profile', profile)
+      .attach('file', PNG_FIXTURE, 'product.png');
+
+  it('isolates tenants, profiles, and preserves ownership after key rotation', async () => {
+    const a = await upload('shop-a-key').expect(201);
+    const rotated = await upload('shop-a-rotated').expect(201);
+    expect(rotated.body.hash).toBe(a.body.hash);
+    expect(rotated.body.cached).toBe(true);
+    const b = await upload('shop-b-key').expect(201);
+    const dark = await upload('shop-a-key', 'dark').expect(201);
+    expect(b.body.hash).not.toBe(a.body.hash);
+    expect(dark.body.hash).not.toBe(a.body.hash);
+    await request(app.getHttpServer()).get(a.body.url).set('X-API-Key', 'shop-b-key').expect(404);
+    await request(app.getHttpServer())
+      .get(a.body.url)
+      .set('X-API-Key', 'shop-a-rotated')
+      .expect(200);
+    await upload('shop-a-key', 'unknown').expect(400);
+    await upload('shop-a-key', '__proto__').expect(400);
+  });
+
+  it('processes a bounded batch and deduplicates repeated files', async () => {
+    const result = await request(app.getHttpServer())
+      .post('/v1/images/batch')
+      .set('X-API-Key', 'shop-a-key')
+      .field('profile', 'white')
+      .attach('files', PNG_FIXTURE, 'one.png')
+      .attach('files', PNG_FIXTURE, 'two.png')
+      .expect(201);
+    expect(result.body.results).toHaveLength(2);
+    expect(result.body.results[1]).toMatchObject({ index: 1, status: 'succeeded', cached: true });
+    expect(result.body.results[0].hash).toBe(result.body.results[1].hash);
+  });
+
+  it('validates the entire batch before provider work and bounds file count', async () => {
+    await request(app.getHttpServer())
+      .post('/v1/images/batch')
+      .set('X-API-Key', 'shop-a-key')
+      .attach('files', PNG_FIXTURE, 'valid.png')
+      .attach('files', Buffer.from('invalid'), 'invalid.png')
+      .expect(400);
+    const req = request(app.getHttpServer())
+      .post('/v1/images/batch')
+      .set('X-API-Key', 'shop-a-key');
+    for (let i = 0; i < 6; i++) req.attach('files', PNG_FIXTURE, `${i}.png`);
+    await req.expect(400);
   });
 
   describe('GET /health', () => {
@@ -167,7 +240,7 @@ describe('Image API (e2e)', () => {
         .expect(200);
 
       expect(res.headers['content-type']).toBe('image/png');
-      expect(res.headers['cache-control']).toContain('immutable');
+      expect(res.headers['cache-control']).toBe('private, no-store');
       expect(res.body.length).toBeGreaterThan(0);
     });
 

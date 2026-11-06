@@ -22,10 +22,10 @@ describe('LocalFileStorageAdapter', () => {
 
   it('guarda y lee un buffer por hash', async () => {
     const data = Buffer.from('image-bytes');
-    const path = await adapter.save('abc123', data);
+    const path = await adapter.save('a'.repeat(64), data);
 
     expect(existsSync(path)).toBe(true);
-    const read = await adapter.read('abc123');
+    const read = await adapter.read('a'.repeat(64));
     expect(read.equals(data)).toBe(true);
   });
 

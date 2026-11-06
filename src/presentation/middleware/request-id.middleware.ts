@@ -13,7 +13,7 @@ export class RequestIdMiddleware implements NestMiddleware {
   use(req: TrackedRequest, res: Response, next: NextFunction): void {
     const incoming = req.headers['x-request-id'];
     const id =
-      typeof incoming === 'string' && incoming.length > 0
+      typeof incoming === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(incoming)
         ? incoming.slice(0, RequestIdMiddleware.MAX_ID_LENGTH)
         : randomUUID();
     req.id = id;

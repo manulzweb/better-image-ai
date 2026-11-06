@@ -21,7 +21,7 @@ describe('SqliteImageRepository', () => {
   });
 
   afterEach(() => {
-    created.forEach((r) => r.onModuleDestroy());
+    created.forEach((r) => r.onApplicationShutdown());
     created.length = 0;
     rmSync(dir, { recursive: true, force: true });
   });

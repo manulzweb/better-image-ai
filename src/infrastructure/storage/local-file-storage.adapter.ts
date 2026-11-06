@@ -19,6 +19,7 @@ export class LocalFileStorageAdapter implements StoragePort {
   }
 
   private filePath(hash: string): string {
+    if (!SHA256_HEX_REGEX.test(hash)) throw new ImageNotFoundException(hash);
     return join(this.baseDir, hash);
   }
 
@@ -28,15 +29,22 @@ export class LocalFileStorageAdapter implements StoragePort {
     const path = this.filePath(hash);
     const suffix = randomBytes(8).toString('hex');
     const tmp = `${path}.tmp-${suffix}`;
-    await writeFile(tmp, buffer);
-    await rename(tmp, path);
+    try {
+      await writeFile(tmp, buffer, { flag: 'wx', mode: 0o600 });
+      await rename(tmp, path);
+    } finally {
+      await unlink(tmp).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== 'ENOENT') throw error;
+      });
+    }
     return path;
   }
 
   async read(hash: string): Promise<Buffer> {
     try {
       return await readFile(this.filePath(hash));
-    } catch {
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       throw new ImageNotFoundException(hash);
     }
   }
@@ -44,9 +52,15 @@ export class LocalFileStorageAdapter implements StoragePort {
   // Borra cualquier cosa que no sea un hash sha256 válido presente en la DB
   // (ficheros huérfanos o temporales `*.tmp-*`). Devuelve lo borrado.
   async removeOrphans(validHashes: ReadonlySet<string>): Promise<string[]> {
-    const entries = await readdir(this.baseDir);
+    const entries = await readdir(this.baseDir, { withFileTypes: true });
     const removed: string[] = [];
-    for (const entry of entries) {
+    for (const item of entries) {
+      const entry = item.name;
+      if (
+        !item.isFile() ||
+        (!SHA256_HEX_REGEX.test(entry) && !/^[a-f0-9]{64}\.tmp-[a-f0-9]+$/.test(entry))
+      )
+        continue;
       if (!SHA256_HEX_REGEX.test(entry) || !validHashes.has(entry)) {
         await unlink(join(this.baseDir, entry));
         removed.push(entry);
@@ -56,7 +70,7 @@ export class LocalFileStorageAdapter implements StoragePort {
   }
 
   async probe(): Promise<void> {
-    const probePath = join(this.baseDir, `.health-${process.pid}`);
+    const probePath = join(this.baseDir, `.health-${randomBytes(16).toString('hex')}`);
     await writeFile(probePath, 'ok');
     await unlink(probePath);
   }

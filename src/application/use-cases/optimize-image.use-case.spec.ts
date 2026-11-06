@@ -1,3 +1,4 @@
+import { CreditsPort } from '../ports/credits.port';
 import { OptimizeImageUseCase } from './optimize-image.use-case';
 import { ImageOptimizerPort } from '../ports/image-optimizer.port';
 import { ImageRepositoryPort } from '../ports/image-repository.port';
@@ -16,6 +17,7 @@ describe('OptimizeImageUseCase', () => {
   let optimizer: jest.Mocked<ImageOptimizerPort>;
   let repository: jest.Mocked<ImageRepositoryPort>;
   let hashService: jest.Mocked<HashServicePort>;
+  let credits: jest.Mocked<CreditsPort>;
   let storage: jest.Mocked<StoragePort>;
 
   beforeEach(() => {
@@ -37,7 +39,36 @@ describe('OptimizeImageUseCase', () => {
       probe: jest.fn(),
     };
 
-    useCase = new OptimizeImageUseCase(optimizer, repository, hashService, storage);
+    credits = {
+      reserve: jest.fn().mockResolvedValue(undefined),
+      release: jest.fn().mockResolvedValue(undefined),
+      persist: jest.fn().mockImplementation((image) => repository.save(image)),
+      grant: jest.fn(),
+      balance: jest.fn(),
+    };
+    useCase = new OptimizeImageUseCase(optimizer, repository, hashService, storage, credits);
+  });
+
+  it('does not call Gemini without a successful credit reservation', async () => {
+    credits.reserve.mockRejectedValue(new Error('Insufficient credits'));
+    await expect(useCase.execute({ buffer: PNG_1X1, mimeType: 'image/png' })).rejects.toThrow(
+      'Insufficient',
+    );
+    expect(optimizer.optimize).not.toHaveBeenCalled();
+  });
+
+  it('releases credit reservations on provider failure', async () => {
+    optimizer.optimize.mockRejectedValue(new Error('provider failed'));
+    await expect(
+      useCase.execute({
+        buffer: PNG_1X1,
+        mimeType: 'image/png',
+        tenantId: 'shop',
+        reservationId: 'job:0',
+      }),
+    ).rejects.toThrow('provider failed');
+    expect(credits.release).toHaveBeenCalledWith('job:0');
+    expect(credits.persist).not.toHaveBeenCalled();
   });
 
   it('procesa y persiste una imagen nueva (cached=false)', async () => {
